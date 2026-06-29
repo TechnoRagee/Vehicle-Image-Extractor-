@@ -150,6 +150,9 @@ def extract_from_pdf(pdf_path, out_dir, min_size, do_rembg, bg_tol, log_fn, prog
             if pix.colorspace and pix.colorspace.n >= 4:
                 pix = fitz.Pixmap(fitz.csRGB, pix)
 
+            if pix.alpha:
+                pix = fitz.Pixmap(fitz.csRGB, pix)
+
             if pix.width < min_size or pix.height < min_size:
                 pix = None; skipped += 1; continue
 
@@ -314,10 +317,6 @@ class App(tk.Tk):
         style.configure("TProgressbar",
                          troughcolor=SURFACE2, background=CYAN,
                          borderwidth=0, thickness=3)
-        style.layout(
-                        "Thin.Horizontal.TProgressbar",
-                        style.layout("Horizontal.TProgressbar")
-                    )
         style.configure(
                 "Thin.Horizontal.TProgressbar",
                 troughcolor=SURFACE2,
@@ -749,10 +748,10 @@ class App(tk.Tk):
 
         # Per-row mini progress
         prog = ttk.Progressbar(
-    inner,
-    style="TProgressbar",
-    mode="determinate",
-    length=60
+            inner,
+            style="TProgressbar",
+            mode="determinate",
+            length=60
         )
         prog.grid(row=0, column=3, padx=(6, 2))
 
