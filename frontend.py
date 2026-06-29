@@ -147,17 +147,23 @@ def extract_from_pdf(pdf_path, out_dir, min_size, do_rembg, bg_tol, log_fn, prog
             except Exception as e:
                 log_fn(f"  skip xref {xref}: {e}"); continue
 
-            if pix.colorspace and pix.colorspace.n >= 4:
-                pix = fitz.Pixmap(fitz.csRGB, pix)
+            try:
+                if pix.colorspace is None or pix.colorspace.n != 1 and pix.colorspace.n != 3:
+                    pix = fitz.Pixmap(fitz.csRGB, pix)
 
-            if pix.alpha:
-                pix = fitz.Pixmap(pix, 0)  # drop alpha channel
+                if pix.alpha:
+                    pix = fitz.Pixmap(pix, 0)
 
-            if pix.width < min_size or pix.height < min_size:
-                pix = None; skipped += 1; continue
+                png_bytes = pix.tobytes("png")
+
+            except Exception as e:
+                log_fn(f"  skip xref {xref}: {e}")
+                pix = None
+                skipped += 1
+                continue
 
             src_w, src_h = pix.width, pix.height
-            png_bytes = pix.tobytes("png"); pix = None
+            pix = None
             digest = hashlib.md5(png_bytes).hexdigest()
             if digest in seen:
                 continue
