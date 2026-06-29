@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Car Image Reducer</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<style>
+  :root{
+    --bg:#14161a; --panel:#1c1f26; --panel-2:#21252e; --line:#2a2e37;
+    --ink:#e7e9ee; --muted:#8b909c; --accent:#ff8a3d; --accent-dim:#9c5223;
+    --ok:#5fd38a; --mono:ui-monospace,"SFMono-Regular","JetBrains Mono",Menlo,Consolas,monospace;
+    --sans:Inter,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);
+       font-size:15px;line-height:1.5;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:1040px;margin:0 auto;padding:40px 24px 80px}
+
+  header{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:28px}
+  header h1{font-size:26px;font-weight:700;letter-spacing:-.02em;margin:0}
+  header .tag{font-family:var(--mono);font-size:12px;color:var(--accent);
+    border:1px solid var(--accent-dim);border-radius:4px;padding:2px 8px}
+  header p{width:100%;margin:6px 0 0;color:var(--muted);font-size:14px}
+
+  /* controls */
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:18px}
+  .controls{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:16px;margin-bottom:18px}
+  .ctl label{display:block;font-family:var(--mono);font-size:11px;text-transform:uppercase;
+    letter-spacing:.08em;color:var(--muted);margin-bottom:6px}
+  .ctl input[type=number]{width:100%;background:var(--panel-2);border:1px solid var(--line);
+    color:var(--ink);border-radius:6px;padding:9px 10px;font-family:var(--mono);font-size:14px}
+  .ctl input:focus{outline:none;border-color:var(--accent)}
+  .seg{display:flex;border:1px solid var(--line);border-radius:6px;overflow:hidden}
+  .seg button{flex:1;background:var(--panel-2);border:0;color:var(--muted);padding:9px 0;
+    font-family:var(--mono);font-size:13px;cursor:pointer}
+  .seg button.on{background:var(--accent);color:#1a1206;font-weight:600}
+  .ctl input[type=range]{width:100%;accent-color:var(--accent)}
+  .qval{font-family:var(--mono);color:var(--ink)}
+
+  /* dropzone */
+  .drop{margin-top:18px;border:1.5px dashed var(--line);border-radius:10px;padding:38px 20px;
+    text-align:center;color:var(--muted);cursor:pointer;transition:border-color .15s,background .15s}
+  .drop:hover,.drop.hot{border-color:var(--accent);background:#1a1d24}
+  .drop strong{color:var(--ink)}
+  .drop .hint{font-family:var(--mono);font-size:12px;margin-top:6px}
+
+  .bar{display:flex;gap:12px;align-items:center;margin:20px 0 8px;flex-wrap:wrap}
+  .count{font-family:var(--mono);font-size:13px;color:var(--muted)}
+  .btn{background:var(--accent);color:#1a1206;border:0;border-radius:7px;padding:10px 18px;
+    font-weight:600;font-size:14px;cursor:pointer}
+  .btn:disabled{opacity:.35;cursor:not-allowed}
+  .btn.ghost{background:transparent;color:var(--ink);border:1px solid var(--line)}
+
+  /* result cards */
+  .cards{display:grid;gap:10px;margin-top:8px}
+  .card{display:grid;grid-template-columns:84px 1fr auto;gap:16px;align-items:center;
+    background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px}
+  .thumb{width:84px;height:63px;border-radius:6px;background:
+    linear-gradient(45deg,#222 25%,transparent 25%,transparent 75%,#222 75%) 0 0/12px 12px,
+    linear-gradient(45deg,#222 25%,#1a1c22 25%,#1a1c22 75%,#222 75%) 6px 6px/12px 12px;
+    display:flex;align-items:center;justify-content:center;overflow:hidden}
+  .thumb img{max-width:100%;max-height:100%;display:block}
+  .meta .name{font-weight:600;font-size:14px;word-break:break-all}
+  .meta .nums{font-family:var(--mono);font-size:12.5px;color:var(--muted);margin-top:3px;
+    display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .meta .arrow{color:var(--accent)}
+  .meta .after{color:var(--ink)}
+  .meta .delta{color:var(--ok)}
+  .card .dl{background:transparent;border:1px solid var(--line);color:var(--ink);
+    border-radius:6px;padding:7px 12px;font-size:13px;cursor:pointer;text-decoration:none}
+  .card.err .meta .nums{color:#ff6b6b}
+  footer{margin-top:34px;color:var(--muted);font-family:var(--mono);font-size:12px}
+  @media(max-width:560px){.card{grid-template-columns:64px 1fr}.card .dl{grid-column:2}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Car Image Reducer</h1>
+    <span class="tag">client-side</span>
+    <p>Drop images, fit them into a fixed canvas, download smaller. Nothing leaves your machine.</p>
+  </header>
+
+  <div class="panel">
+    <div class="controls">
+      <div class="ctl">
+        <label>Width (px)</label>
+        <input type="number" id="w" value="600" min="1" max="10000">
+      </div>
+      <div class="ctl">
+        <label>Height (px)</label>
+        <input type="number" id="h" value="450" min="1" max="10000">
+      </div>
+      <div class="ctl">
+        <label>Format</label>
+        <div class="seg" id="fmt">
+          <button data-v="webp" class="on">webp</button>
+          <button data-v="png">png</button>
+        </div>
+      </div>
+      <div class="ctl">
+        <label>Background</label>
+        <div class="seg" id="bg">
+          <button data-v="transparent" class="on">transparent</button>
+          <button data-v="white">white</button>
+        </div>
+      </div>
+      <div class="ctl">
+        <label>Quality <span class="qval" id="qval">85</span></label>
+        <input type="range" id="q" min="1" max="100" value="85">
+      </div>
+      <div class="ctl">
+        <label>Max KB (optional)</label>
+        <input type="number" id="maxkb" placeholder="none" min="1">
+      </div>
+    </div>
+
+    <div class="drop" id="drop">
+      <strong>Drop images here</strong> or click to pick
+      <div class="hint">jpg · png · webp · bmp — folders not supported, select files</div>
+      <input type="file" id="file" accept="image/*" multiple hidden>
+    </div>
+  </div>
+
+  <div class="bar">
+    <span class="count" id="count">0 images</span>
+    <button class="btn" id="run" disabled>Reduce all</button>
+    <button class="btn ghost" id="zip" disabled>Download zip</button>
+    <button class="btn ghost" id="clear" disabled>Clear</button>
+  </div>
+
+  <div class="cards" id="cards"></div>
+
+  <footer>Fit into box · never upscales · centers on canvas · png keeps quality at 100</footer>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+let items = [];           // {file, name, blob, beforeKB, beforeDim, afterKB, afterDim, status}
+
+// segmented toggles
+function wireSeg(id){
+  const seg = $(id);
+  seg.addEventListener('click', e=>{
+    const b = e.target.closest('button'); if(!b) return;
+    [...seg.children].forEach(c=>c.classList.toggle('on', c===b));
+    seg.dataset.v = b.dataset.v;
+  });
+  seg.dataset.v = seg.querySelector('.on').dataset.v;
+}
+wireSeg('#fmt'); wireSeg('#bg');
+$('#q').addEventListener('input', e=> $('#qval').textContent = e.target.value);
+
+// file intake
+const drop = $('#drop'), fileInput = $('#file');
+drop.addEventListener('click', ()=> fileInput.click());
+['dragover','dragenter'].forEach(ev=>drop.addEventListener(ev, e=>{e.preventDefault();drop.classList.add('hot');}));
+['dragleave','drop'].forEach(ev=>drop.addEventListener(ev, e=>{e.preventDefault();drop.classList.remove('hot');}));
+drop.addEventListener('drop', e=> addFiles(e.dataTransfer.files));
+fileInput.addEventListener('change', e=> addFiles(e.target.files));
+
+function addFiles(fileList){
+  const fs = [...fileList].filter(f=> f.type.startsWith('image/'));
+  for(const f of fs){
+    items.push({file:f, name:f.name, status:'pending',
+                beforeKB:Math.round(f.size/1024)});
+  }
+  refresh();
+}
+
+function refresh(){
+  $('#count').textContent = `${items.length} image${items.length!==1?'s':''}`;
+  const has = items.length>0;
+  $('#run').disabled = !has;
+  $('#clear').disabled = !has;
+  $('#zip').disabled = !items.some(i=>i.blob);
+  render();
+}
+
+$('#clear').addEventListener('click', ()=>{ items=[]; refresh(); });
+
+// ── core: fit into W x H canvas (no upscale, centered) ──
+function loadImage(file){
+  return new Promise((res,rej)=>{
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = ()=>{ URL.revokeObjectURL(url); res(img); };
+    img.onerror = ()=>{ URL.revokeObjectURL(url); rej(new Error('decode failed')); };
+    img.src = url;
+  });
+}
+
+function fitInto(img, W, H, bg){
+  const c = document.createElement('canvas');
+  c.width = W; c.height = H;
+  const ctx = c.getContext('2d');
+  if(bg === 'white'){ ctx.fillStyle = '#fff'; ctx.fillRect(0,0,W,H); }
+  const s = Math.min(W/img.width, H/img.height, 1);          // never upscale
+  const nw = Math.max(1, Math.round(img.width*s));
+  const nh = Math.max(1, Math.round(img.height*s));
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(img, Math.round((W-nw)/2), Math.round((H-nh)/2), nw, nh);
+  return c;
+}
+
+function canvasToBlob(c, type, quality){
+  return new Promise(res=> c.toBlob(res, type, quality));
+}
+
+async function encode(canvas, fmt, q, maxKB){
+  const type = fmt==='png' ? 'image/png' : 'image/webp';
+  let quality = q/100;
+  let blob = await canvasToBlob(canvas, type, quality);
+  if(fmt==='webp' && maxKB){                                  // shrink until it fits
+    while(blob && blob.size/1024 > maxKB && quality > 0.3){
+      quality -= 0.1;
+      blob = await canvasToBlob(canvas, type, quality);
+    }
+  }
+  return blob;
+}
+
+function outName(name, fmt){
+  return name.replace(/\.[^.]+$/, '') + '.' + fmt;
+}
+
+$('#run').addEventListener('click', runAll);
+async function runAll(){
+  const W = parseInt($('#w').value)||600;
+  const H = parseInt($('#h').value)||450;
+  const fmt = $('#fmt').dataset.v;
+  const bg  = $('#bg').dataset.v;
+  const q   = parseInt($('#q').value)||85;
+  const maxKB = parseInt($('#maxkb').value)||null;
+  $('#run').disabled = true;
+
+  for(const it of items){
+    try{
+      const img = await loadImage(it.file);
+      it.beforeDim = [img.width, img.height];
+      const canvas = fitInto(img, W, H, bg);
+      const blob = await encode(canvas, fmt, q, maxKB);
+      it.blob = blob;
+      it.outName = outName(it.name, fmt);
+      it.afterDim = [W, H];
+      it.afterKB = Math.round(blob.size/1024);
+      it.status = 'ok';
+    }catch(err){
+      it.status = 'err';
+      it.reason = err.message;
+    }
+    render();
+  }
+  $('#run').disabled = false;
+  $('#zip').disabled = !items.some(i=>i.blob);
+}
+
+function render(){
+  const box = $('#cards');
+  box.innerHTML = '';
+  for(const it of items){
+    const card = document.createElement('div');
+    card.className = 'card' + (it.status==='err'?' err':'');
+    const thumbSrc = it.blob ? URL.createObjectURL(it.blob) : null;
+    const bDim = it.beforeDim ? `${it.beforeDim[0]}×${it.beforeDim[1]}` : '?';
+    const aDim = it.afterDim ? `${it.afterDim[0]}×${it.afterDim[1]}` : '';
+    let nums;
+    if(it.status==='ok'){
+      const saved = it.beforeKB>0 ? Math.round((1-it.afterKB/it.beforeKB)*100) : 0;
+      nums = `<span>${bDim} · ${it.beforeKB} KB</span>
+              <span class="arrow">→</span>
+              <span class="after">${aDim} · ${it.afterKB} KB</span>
+              <span class="delta">−${saved}%</span>`;
+    }else if(it.status==='err'){
+      nums = `<span>${it.reason||'failed'}</span>`;
+    }else{
+      nums = `<span>${it.beforeKB} KB · pending</span>`;
+    }
+    card.innerHTML = `
+      <div class="thumb">${thumbSrc?`<img src="${thumbSrc}">`:''}</div>
+      <div class="meta">
+        <div class="name">${it.outName||it.name}</div>
+        <div class="nums">${nums}</div>
+      </div>`;
+    if(it.blob){
+      const a = document.createElement('a');
+      a.className='dl'; a.textContent='Download';
+      a.href = URL.createObjectURL(it.blob);
+      a.download = it.outName;
+      card.appendChild(a);
+    }
+    box.appendChild(card);
+  }
+}
+
+$('#zip').addEventListener('click', async ()=>{
+  const zip = new JSZip();
+  for(const it of items){
+    if(it.blob) zip.file(it.outName, it.blob);
+  }
+  const blob = await zip.generateAsync({type:'blob'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'car_images_reduced.zip';
+  a.click();
+});
+</script>
+</body>
+</html>
