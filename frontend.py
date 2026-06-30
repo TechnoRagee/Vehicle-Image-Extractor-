@@ -24,11 +24,52 @@ import fitz
 import numpy as np
 from PIL import Image
 
+Image.MAX_IMAGE_PIXELS = None  # avoid DecompressionBombError on big brochure scans
+
 try:
     from rembg import remove as rembg_remove
     REMBG_AVAILABLE = True
 except ImportError:
     REMBG_AVAILABLE = False
+
+try:
+    from ultralytics import YOLO
+    YOLO_AVAILABLE = True
+except ImportError:
+    YOLO_AVAILABLE = False
+
+_yolo_model_cache = {}
+
+
+def get_yolo_model(weights="yolov8n.pt"):
+    if weights not in _yolo_model_cache:
+        _yolo_model_cache[weights] = YOLO(weights)
+    return _yolo_model_cache[weights]
+
+
+def detect_car_box(model, pil_img, conf=0.35, classes=(2,)):
+    """Run YOLO; return best car bounding box (x1,y1,x2,y2) or None."""
+    arr = np.array(pil_img.convert("RGB"))
+    results = model.predict(arr, conf=conf, classes=list(classes), verbose=False)
+    best_box, best_conf = None, -1.0
+    for r in results:
+        if r.boxes is None:
+            continue
+        for box, c in zip(r.boxes.xyxy.tolist(), r.boxes.conf.tolist()):
+            if c > best_conf:
+                best_conf = c
+                best_box = box
+    return best_box, best_conf
+
+
+def crop_with_padding(pil_img, box, pad=10):
+    w, h = pil_img.size
+    x1, y1, x2, y2 = box
+    x1 = max(0, int(x1) - pad)
+    y1 = max(0, int(y1) - pad)
+    x2 = min(w, int(x2) + pad)
+    y2 = min(h, int(y2) + pad)
+    return pil_img.crop((x1, y1, x2, y2))
 
 
 # ── Colours ───────────────────────────────────────────────────────────────────
@@ -122,7 +163,7 @@ def save_canvas(canvas, path, out_fmt="webp", quality=85, max_kb=None):
 
 def extract_from_pdf(pdf_path, out_dir, min_size, do_rembg, bg_tol, log_fn, progress_fn=None,
                      resize=False, target_w=600, target_h=450, out_fmt="webp",
-                     quality=85, max_kb=None):
+                     quality=85, max_kb=None, use_yolo=False, yolo_conf=0.35, yolo_pad=10):
     os.makedirs(out_dir, exist_ok=True)
     try:
         doc = fitz.open(pdf_path)
@@ -134,6 +175,14 @@ def extract_from_pdf(pdf_path, out_dir, min_size, do_rembg, bg_tol, log_fn, prog
     skipped = 0
     counter = 1
     total_pages = doc.page_count
+
+    yolo_model = None
+    if use_yolo:
+        if not YOLO_AVAILABLE:
+            log_fn("  ERROR: ultralytics not installed, cannot use YOLO mode")
+            doc.close()
+            return 0, 0
+        yolo_model = get_yolo_model()
 
     for pno in range(total_pages):
         page = doc[pno]
@@ -148,26 +197,35 @@ def extract_from_pdf(pdf_path, out_dir, min_size, do_rembg, bg_tol, log_fn, prog
                 log_fn(f"  skip xref {xref}: {e}"); continue
 
             try:
-                if pix.colorspace is None or pix.colorspace.n != 1 and pix.colorspace.n != 3:
+                if pix.colorspace is None or pix.colorspace.n not in (1, 3):
                     pix = fitz.Pixmap(fitz.csRGB, pix)
-
                 if pix.alpha:
-                    pix = fitz.Pixmap(pix, 0)
-
+                    pix = fitz.Pixmap(pix, 0)  # drop alpha channel
                 png_bytes = pix.tobytes("png")
-
             except Exception as e:
                 log_fn(f"  skip xref {xref}: {e}")
-                pix = None
-                skipped += 1
-                continue
+                pix = None; skipped += 1; continue
 
             src_w, src_h = pix.width, pix.height
             pix = None
+
+            if src_w < min_size or src_h < min_size:
+                skipped += 1; continue
+
             digest = hashlib.md5(png_bytes).hexdigest()
             if digest in seen:
                 continue
             seen.add(digest)
+
+            if use_yolo:
+                pil_img = Image.open(io.BytesIO(png_bytes)).convert("RGB")
+                box, score = detect_car_box(yolo_model, pil_img, conf=yolo_conf)
+                if box is None:
+                    skipped += 1; continue
+                cropped = crop_with_padding(pil_img, box, pad=yolo_pad)
+                buf = io.BytesIO(); cropped.save(buf, "PNG")
+                png_bytes = buf.getvalue()
+                log_fn(f"  car detected (conf={score:.2f})")
 
             if do_rembg or bg_tol > 0:
                 png_bytes = remove_bg(png_bytes, do_rembg, bg_tol)
@@ -554,6 +612,50 @@ class App(tk.Tk):
                  font=("Segoe UI", 7), fg=status_color,
                  bg=SURFACE).pack(side="right")
 
+        tk.Frame(opt_inner, bg=BORDER, height=1).pack(fill="x", pady=4)
+
+        # YOLO car-detect toggle
+        yolo_row = tk.Frame(opt_inner, bg=SURFACE)
+        yolo_row.pack(fill="x")
+
+        self.yolo_var = tk.BooleanVar(value=False)
+        yolo_cb = tk.Checkbutton(yolo_row,
+                            text="YOLO car detect + crop",
+                            variable=self.yolo_var,
+                            state="normal" if YOLO_AVAILABLE else "disabled",
+                            fg=FG if YOLO_AVAILABLE else FG3,
+                            bg=SURFACE, selectcolor=SURFACE2,
+                            activebackground=SURFACE,
+                            activeforeground=FG,
+                            font=("Segoe UI", 9),
+                            cursor="hand2" if YOLO_AVAILABLE else "arrow")
+        yolo_cb.pack(side="left")
+
+        yolo_status_text  = "ultralytics ready" if YOLO_AVAILABLE else "pip install ultralytics"
+        yolo_status_color = GREEN if YOLO_AVAILABLE else AMBER
+        tk.Label(yolo_row, text=yolo_status_text,
+                 font=("Segoe UI", 7), fg=yolo_status_color,
+                 bg=SURFACE).pack(side="right")
+
+        yolo_param_row = tk.Frame(opt_inner, bg=SURFACE)
+        yolo_param_row.pack(fill="x", pady=(6, 0))
+        tk.Label(yolo_param_row, text="conf", font=("Segoe UI", 8),
+                 fg=FG2, bg=SURFACE).pack(side="left")
+        self.yolo_conf_var = tk.DoubleVar(value=0.35)
+        tk.Spinbox(yolo_param_row, from_=0.05, to=0.95, increment=0.05,
+                   textvariable=self.yolo_conf_var, width=5,
+                   bg=SURFACE2, fg=FG, buttonbackground=SURFACE2,
+                   relief="flat", font=("Segoe UI", 9),
+                   insertbackground=CYAN).pack(side="left", padx=(4, 12))
+        tk.Label(yolo_param_row, text="pad", font=("Segoe UI", 8),
+                 fg=FG2, bg=SURFACE).pack(side="left")
+        self.yolo_pad_var = tk.IntVar(value=10)
+        tk.Spinbox(yolo_param_row, from_=0, to=200,
+                   textvariable=self.yolo_pad_var, width=5,
+                   bg=SURFACE2, fg=FG, buttonbackground=SURFACE2,
+                   relief="flat", font=("Segoe UI", 9),
+                   insertbackground=CYAN).pack(side="left", padx=(4, 0))
+
         # ── Resize / reducer ────────────────────────────────────────────────
         self._section_label(parent, "RESIZE")
 
@@ -841,6 +943,10 @@ class App(tk.Tk):
         max_kb    = int(mk) if mk.isdigit() else None
         quality   = 85
 
+        use_yolo  = self.yolo_var.get()
+        yolo_conf = float(self.yolo_conf_var.get())
+        yolo_pad  = int(self.yolo_pad_var.get())
+
         total_ok  = 0
         total_skip = 0
         n = len(self.entries)
@@ -876,7 +982,8 @@ class App(tk.Tk):
                 e["pdf"], out_dir, min_size, do_rembg, bg_tol,
                 self._log, make_progress(),
                 resize=do_resize, target_w=target_w, target_h=target_h,
-                out_fmt=out_fmt, quality=quality, max_kb=max_kb)
+                out_fmt=out_fmt, quality=quality, max_kb=max_kb,
+                use_yolo=use_yolo, yolo_conf=yolo_conf, yolo_pad=yolo_pad)
 
             total_ok    += saved
             total_skip  += skipped
